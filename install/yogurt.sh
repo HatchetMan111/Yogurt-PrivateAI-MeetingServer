@@ -34,7 +34,7 @@
 set -Eeuo pipefail
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="1.0.0"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
+INSTALLER_VERSION="1.0.1"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
 APP_NAME="yogurt"           # Kurzname (Logs, Services heißen yogurt-meet*)
 CT_HOSTNAME="yogurt"        # CT bekommt den passenden Namen
 REPO_OWNER="HatchetMan111"
@@ -55,6 +55,16 @@ CT_GATEWAY=""               # nur bei statischer IP nötig, z. B. 192.168.1.1
 CT_PASSWORD=""              # leer = automatisch generieren
 CT_SSHKEY=""                # Pfad ODER URL zu einer Public-Key-Datei (optional)
 SSH_KEY_FILE=""             # aufgelöste Key-Datei für pct create
+# Host-Architektur bestimmt Template- UND llama.cpp-Binary-Auswahl.
+# Live-Fund 2026-11-19 (ProxSmartHome): ohne Arch-Filter nahm die rV-Sortierung
+# das arm64-Template (13.6) vor dem amd64-Template (13.2) → lxc_start-Fehler.
+RAW_ARCH="$(uname -m 2>/dev/null || echo x86_64)"
+HOST_ARCH=""; LLAMA_ARCH=""
+case "$RAW_ARCH" in
+    x86_64)          HOST_ARCH="amd64"; LLAMA_ARCH="x64" ;;
+    aarch64|arm64)   HOST_ARCH="arm64"; LLAMA_ARCH="arm64" ;;
+    *)               HOST_ARCH=""; LLAMA_ARCH="" ;;
+esac
 UI_PORT=8097                # Web-UI im Container (HTTPS, selbstsigniert)
 LLM_PORT=8081               # llama-server – NUR localhost im CT (kein Expose)
 WHISPER_MODEL="small"       # tiny|base|small|medium|large-v3|large-v3-turbo
@@ -331,6 +341,9 @@ parse_args() {
         esac
     done
     # Validierung – die Werte landen direkt in der Container-Konfiguration.
+    if [[ -z "$HOST_ARCH" ]]; then
+        die "Nicht unterstützte Host-Architektur: '$RAW_ARCH' (amd64/arm64 erwartet)."
+    fi
     if ! [[ "$UI_PORT" =~ ^[0-9]+$ ]] || [[ "$UI_PORT" -lt 1 || "$UI_PORT" -gt 65535 ]]; then
         die "Ungültiger UI-Port: '$UI_PORT' (1–65535 erwartet, z. B. --port 8097)"
     fi
@@ -681,7 +694,7 @@ run_inner_setup() {
                | awk '{print $2}' | grep -v '^127\.' | head -1 || true)
     local llama_tag llama_url
     llama_tag=$(resolve_llama_tag)
-    llama_url="https://github.com/ggml-org/llama.cpp/releases/download/${llama_tag}/llama-${llama_tag}-bin-ubuntu-x64.tar.gz"
+    llama_url="https://github.com/ggml-org/llama.cpp/releases/download/${llama_tag}/llama-${llama_tag}-bin-ubuntu-${LLAMA_ARCH}.tar.gz"
     info "llama.cpp-Release: ${llama_tag}"
     write_inner_script
     pct push "$ct_id" "$TMP_DIR/setup-inner.sh" /root/setup-inner.sh
@@ -846,17 +859,21 @@ do_install() {
         fi
     fi
 
-    # Debian-Template sicherstellen (13 bevorzugt – Python 3.13 + aktuelle Wheels;
-    # rV-Sortierung nimmt 13 vor 12, Fallback bleibt)
-    header "🧱 Container-Template"
+    # Debian-Template sicherstellen – IMMER in der Host-Architektur!
+    # (13 bevorzugt für Python 3.13; rV-Sortierung nimmt 13 vor 12, Fallback bleibt.)
+    # Live-Fund 2026-11-19: ohne Arch-Filter gewann debian-13.6-arm64 auf einem
+    # amd64-Host → lxc_start "Failed to spawn". Deshalb: _${HOST_ARCH} erzwingen.
+    header "🧱 Container-Template (${HOST_ARCH})"
     local template=""
-    template=$(pveam list local 2>/dev/null | awk '{print $1}' | grep -o 'debian-1[23]-standard[^ ]*' | sort -rV | head -1 || true)
+    template=$(pveam list local 2>/dev/null | awk '{print $1}' \
+               | grep -oE "debian-1[23]-standard[^ ]*_${HOST_ARCH}[^ ]*" | sort -rV | head -1 || true)
     if [[ -z "$template" ]]; then
-        info "Kein Debian-12/13-Template vorhanden – lade es herunter ..."
+        info "Kein Debian-12/13-Template (${HOST_ARCH}) vorhanden – lade es herunter ..."
         pveam update
-        template=$(pveam available --section system 2>/dev/null | grep -o 'debian-1[23]-standard[^ ]*' | sort -rV | head -1 || true)
+        template=$(pveam available --section system 2>/dev/null \
+                   | grep -oE "debian-1[23]-standard[^ ]*_${HOST_ARCH}[^ ]*" | sort -rV | head -1 || true)
         if [[ -z "$template" ]]; then
-            die "Kein debian-12/13-standard-Template gefunden (pveam available leer?)."
+            die "Kein debian-12/13-standard-Template für ${HOST_ARCH} gefunden.\n  Prüfe: pveam available --section system | grep ${HOST_ARCH}\n  und: uname -m (Host-Architektur: ${RAW_ARCH})"
         fi
         pveam download local "$template"
     fi
@@ -911,7 +928,34 @@ do_install() {
         --start 1 \
         --password "$CT_PASSWORD" \
         "${ssh_keys_args[@]}"
-    ok "Container $CT_ID erstellt und gestartet"
+    ok "Container $CT_ID angelegt"
+
+    # pct create meldet trotz FEHLGESCHLAGENEM Start Exit 0 (Live-Fund 2026-11-19,
+    # ProxSmartHome: arm64-Template auf amd64-Host → lxc_start-Fehler, aber
+    # "✔ erstellt und gestartet"). Laufenden CT daher explizit verifizieren:
+    local running=false
+    for _ in $(seq 1 15); do
+        if pct status "$CT_ID" 2>/dev/null | grep -q "running"; then
+            running=true
+            break
+        fi
+        sleep 1
+    done
+    if ! $running; then
+        warn "Container startete nicht automatisch – versuche pct start ..."
+        pct start "$CT_ID" 2>&1 | tail -2 || true
+        for _ in $(seq 1 20); do
+            if pct status "$CT_ID" 2>/dev/null | grep -q "running"; then
+                running=true
+                break
+            fi
+            sleep 1
+        done
+    fi
+    if ! $running; then
+        die "Container $CT_ID startet NICHT (Template: ${template}, Host: ${RAW_ARCH}/${HOST_ARCH}).\n  Häufigste Ursache: Template-Architektur passt nicht zum Host (hier automatisch gefiltert) ODER Storage/Kapazität.\n  Debug: pct status $CT_ID; journalctl -u lxc@${CT_ID} -e | tail -30\n  Aufräumen: pct destroy $CT_ID --purge"
+    fi
+    ok "Container $CT_ID läuft"
 
     wait_for_ct_network "$CT_ID"
     verify_ct_dns "$CT_ID"

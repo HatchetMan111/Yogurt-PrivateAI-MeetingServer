@@ -110,7 +110,8 @@ link_real() { # echte Binaries per Symlink verfügbar halten (Shadowing via PATH
 }
 link_real "$HOSTBIN" bash sh env awk sed grep cut head tail tr od mktemp tee openssl \
     seq cat mv cp rm mkdir chmod dirname basename sort uniq readlink date printf ls touch \
-    stat id uname du find tar hostname
+    stat id du find tar hostname
+ln -sf "$MK/mock-uname" "$HOSTBIN/uname"
 ln -sf "$MK/mock-curl"  "$HOSTBIN/curl"
 ln -sf "$MK/mock-pct"   "$HOSTBIN/pct"
 ln -sf "$MK/mock-pveam" "$HOSTBIN/pveam"
@@ -165,6 +166,18 @@ cat > "$MK/mock-sleep" <<'EOF'
 exit 0
 EOF
 
+cat > "$MK/mock-uname" <<'EOF'
+#!/usr/bin/env bash
+# uname-Mock: Host-Arch via Lever $HS/host_arch steuerbar (x86_64 | aarch64)
+set -u
+HS="${HARNESS_STATE:?}"
+arch="x86_64"
+[[ -f "$HS/host_arch" ]] && arch=$(/bin/sed -n 's/^//p' "$HS/host_arch")
+if [[ "${1:-}" == "-m" ]]; then echo "$arch"; exit 0; fi
+echo "Linux harness 6.8.0 mock ${arch} GNU/Linux"
+exit 0
+EOF
+
 cat > "$MK/mock-pct" <<'EOF'
 #!/usr/bin/env bash
 # pct-Mock: State in $HARNESS_STATE, Mock-Root = dirname davon
@@ -200,12 +213,19 @@ case "$cmd" in
             if [[ "$prev" == "--hostname" ]]; then hostname="$a"; fi
             prev="$a"
         done
+        echo "$hostname" > "$HS/ct_${id}.hostname"
+        if [[ -f "$HS/create_start_fail" ]]; then
+            # Live-Fund 2026-11-19: pct create meldet Exit 0, Start schlug fehl
+            echo "$id stopped $hostname" >> "$HS/ct_list"
+            echo "stopped" > "$HS/ct_${id}.status"
+            exit 0
+        fi
         echo "$id running $hostname" >> "$HS/ct_list"
         echo "running" > "$HS/ct_${id}.status"
-        echo "$hostname" > "$HS/ct_${id}.hostname"
         exit 0 ;;
     start)
         [[ -f "$HS/ct_${id}.status" ]] || { echo "mock: CT $id unbekannt" >&2; exit 2; }
+        if [[ -f "$HS/start_fail" ]]; then echo "mock: Start fehlgeschlagen" >&2; exit 255; fi
         echo "running" > "$HS/ct_${id}.status"
         /bin/sed -i "s|^$id .*|$id running $(cat "$HS/ct_${id}.hostname" 2>/dev/null || echo ct-$id)|" "$HS/ct_list"
         exit 0 ;;
@@ -290,21 +310,30 @@ set -u
 HS="${HARNESS_STATE:?}"
 echo "pveam $*" >> "$HS/calls.log"
 TMPL="local:vztmpl/debian-13-standard_13.2-1_amd64.tar.zst"
+TMPL_ARM="local:vztmpl/debian-13-standard_13.6-1_arm64.tar.zst"
+have_arm() { [[ -f "$HS/arm64_only" || -f "$HS/arm64_too" ]]; }
 case "${1:-}" in
     list)
         if [[ -f "$HS/template_downloaded" && ! -f "$HS/pveam_empty" ]]; then
-            echo "$TMPL  123456789"
+            if [[ -f "$HS/arm64_only" ]]; then echo "$TMPL_ARM  999"; else echo "$TMPL  123456789"; fi
+            have_arm && [[ ! -f "$HS/arm64_only" ]] && echo "$TMPL_ARM  999"
         fi
         exit 0 ;;
     available)
         if [[ ! -f "$HS/pveam_empty" ]]; then
-            echo "system          $TMPL  123456789"
+            if [[ -f "$HS/arm64_only" ]]; then echo "system          $TMPL_ARM  999"; else echo "system          $TMPL  123456789"; fi
+            have_arm && [[ ! -f "$HS/arm64_only" ]] && echo "system          $TMPL_ARM  999"
         fi
         exit 0 ;;
     update)   exit 0 ;;
     download)
+        # pveam download local <template> → Template ist $3!
         mkdir -p "$HS/templates"
-        touch "$HS/templates/debian-13-standard_13.2-1_amd64.tar.zst"
+        if [[ "${3:-}" == *arm64* ]]; then
+            touch "$HS/templates/debian-13-standard_13.6-1_arm64.tar.zst"
+        else
+            touch "$HS/templates/debian-13-standard_13.2-1_amd64.tar.zst"
+        fi
         touch "$HS/template_downloaded"
         exit 0 ;;
 esac
@@ -336,7 +365,7 @@ case "$url" in
         [[ -n "$outfile" ]] || { echo "curl mock: tarball ohne -o" >&2; exit 1; }
         cp "$FIX/app.tar.gz" "$outfile"
         exit 0 ;;
-    *releases/download/b*/llama-*-bin-ubuntu-x64.tar.gz*)
+    *releases/download/b*/llama-*-bin-ubuntu-*.tar.gz*)
         [[ -n "$outfile" ]] || { echo "curl mock: llama-tarball ohne -o" >&2; exit 1; }
         cp "$FIX/llama.tar.gz" "$outfile"
         exit 0 ;;
@@ -789,6 +818,7 @@ assert_calls 1 "set -o pipefail; bash /root/setup-inner.sh"
 t "Install: Verifikation + Summary-Box mit URL & Einzeiler"
 assert_main_out "Service yogurt-meet-llama läuft"
 assert_main_out "Service yogurt-meet läuft"
+assert_main_out "Container 200 läuft"
 assert_main_out "API gesund (HTTP 200"
 assert_main_out "Vom Host erreichbar: https://$CT_IP:8097"
 assert_main_out "Web-UI:   https://$CT_IP:8097"
@@ -830,12 +860,40 @@ assert_out "Installationsfehler – Exit-Code 255"
 assert_out "Fehlgeschlagener Befehl"
 assert_out "--debug"
 
+t "Install: pct create Exit 0, aber Start gescheitert → Retry + die() mit Diagnose (Live-Fund arm64)"
+reset_state
+touch "$HS/create_start_fail" "$HS/start_fail"
+ec=$(run_installer)
+assert_exit 1 "$ec"
+assert_out "Container startete nicht automatisch"
+assert_out "startet NICHT"
+assert_out "journalctl -u lxc@200"
+assert_calls 1 "pct start 200"
+
+t "Install: nur arm64-Template vorhanden, amd64-Host → die() mit Arch-Hinweis"
+reset_state
+touch "$HS/arm64_only"
+ec=$(run_installer)
+assert_exit 1 "$ec"
+assert_out "Kein debian-12/13-standard-Template für amd64 gefunden"
+assert_out "uname -m"
+
+t "Install: arm64-Host → wählt arm64-Template und arm64-llama-Binary"
+reset_state
+printf 'aarch64\n' > "$HS/host_arch"
+touch "$HS/arm64_too"
+ec=$(run_installer)
+assert_exit 0 "$ec"
+assert_fregex "$HS/ct_200.create" 'TEMPLATE=local:vztmpl/debian-13-standard_13\.6-1_arm64'
+assert_calls 1 "llama-b12541-bin-ubuntu-arm64.tar.gz"
+assert_out "Container-Template (arm64)"
+
 t "Install: kein Template verfügbar → die()"
 reset_state
 touch "$HS/pveam_empty"
 ec=$(run_installer)
 assert_exit 1 "$ec"
-assert_out "Kein debian-12/13-standard-Template gefunden"
+assert_out "Kein debian-12/13-standard-Template für amd64 gefunden"
 
 t "Install: Netzwerk-Poll schlägt fehl → die() mit Diagnose"
 reset_state
