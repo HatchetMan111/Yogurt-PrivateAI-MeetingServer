@@ -487,4 +487,22 @@ else:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("YM_PORT", "8097")))
+
+    tls_cert = os.environ.get("YM_TLS_CERT", "").strip()
+    tls_key = os.environ.get("YM_TLS_KEY", "").strip()
+    ssl_args: dict = {}
+    if tls_cert and tls_key and os.path.isfile(tls_cert) and os.path.isfile(tls_key):
+        ssl_args = {"ssl_certfile": tls_cert, "ssl_keyfile": tls_key}
+        log.info("TLS aktiv (%s) – Mikrofon braucht den Secure Context", tls_cert)
+    else:
+        log.warning(
+            "KEIN TLS konfiguriert (YM_TLS_CERT/YM_TLS_KEY fehlen oder Dateien fehlen) – "
+            "der Server lauscht auf HTTP. Das BROWSER-MIKROFON funktioniert dann NICHT "
+            "(kein Secure Context)! Installer liefert normalerweise /opt/yogurt/tls/*."
+        )
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.environ.get("YM_PORT", "8097")),
+        **ssl_args,
+    )
