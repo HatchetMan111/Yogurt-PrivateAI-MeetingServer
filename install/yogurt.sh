@@ -34,7 +34,7 @@
 set -Eeuo pipefail
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="1.0.2"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
+INSTALLER_VERSION="1.0.3"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
 APP_NAME="yogurt"           # Kurzname (Logs, Services heißen yogurt-meet*)
 CT_HOSTNAME="yogurt"        # CT bekommt den passenden Namen
 REPO_OWNER="HatchetMan111"
@@ -668,6 +668,19 @@ for _ in $(seq 1 40); do
     sleep 3
 done
 if [[ -z "$UI_OK" ]]; then
+    echo ">>> Diagnose (Web-UI-API 000) – automatische Ausgabe:"
+    echo "--- app.env (YM_*) ---"
+    /bin/grep -E '^YM_(PORT|LLM_PORT|TLS_CERT|TLS_KEY)=' "${APP_DIR}/app.env" 2>/dev/null || echo "(app.env fehlt/leer)"
+    echo "--- TLS-Dateien ---"
+    ls -la "${TLS_DIR}/" 2>/dev/null || echo "(${TLS_DIR} fehlt)"
+    echo "--- Unit yogurt-meet.service ---"
+    systemctl cat yogurt-meet 2>/dev/null | /bin/grep -E 'EnvironmentFile|ExecStart|WorkingDirectory' || true
+    echo "--- HTTP-Test (ohne TLS, muss 200 zeigen wenn uvicorn auf HTTP läuft) ---"
+    curl -s -o /dev/null -w 'HTTP : %{http_code}\n' --max-time 3 "http://127.0.0.1:${UI_PORT}/api/health" || true
+    echo "--- HTTPS-Test ---"
+    curl -sk -o /dev/null -w 'HTTPS: %{http_code}\n' --max-time 3 "https://127.0.0.1:${UI_PORT}/api/health" || true
+    echo "--- journalctl yogurt-meet (letzte 15) ---"
+    journalctl -u yogurt-meet -n 15 --no-pager 2>/dev/null || true
     die "Web-UI-API antwortet nicht mit 200 (letzter Code: ${code:-keiner}).\n  Debug: journalctl -u yogurt-meet -e\n  curl -sk https://127.0.0.1:${UI_PORT}/api/health"
 fi
 ok "API gesund (HTTP 200)"

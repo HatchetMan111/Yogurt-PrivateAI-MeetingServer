@@ -488,17 +488,20 @@ else:
 if __name__ == "__main__":
     import uvicorn
 
-    tls_cert = os.environ.get("YM_TLS_CERT", "").strip()
-    tls_key = os.environ.get("YM_TLS_KEY", "").strip()
+    # TLS: Env-Werte nutzen, sonst auf die Installer-Default-Pfade fallen.
+    # (Live-2026-11-22: Env kam nicht durch → Default-Pfade als Fallback, damit
+    #  das Mikrofon im Browser unabhängig von app.env/systemd sauber per HTTPS läuft.)
+    tls_cert = os.environ.get("YM_TLS_CERT", "").strip() or "/opt/yogurt/tls/cert.pem"
+    tls_key = os.environ.get("YM_TLS_KEY", "").strip() or "/opt/yogurt/tls/key.pem"
     ssl_args: dict = {}
-    if tls_cert and tls_key and os.path.isfile(tls_cert) and os.path.isfile(tls_key):
+    if os.path.isfile(tls_cert) and os.path.isfile(tls_key):
         ssl_args = {"ssl_certfile": tls_cert, "ssl_keyfile": tls_key}
         log.info("TLS aktiv (%s) – Mikrofon braucht den Secure Context", tls_cert)
     else:
         log.warning(
-            "KEIN TLS konfiguriert (YM_TLS_CERT/YM_TLS_KEY fehlen oder Dateien fehlen) – "
-            "der Server lauscht auf HTTP. Das BROWSER-MIKROFON funktioniert dann NICHT "
-            "(kein Secure Context)! Installer liefert normalerweise /opt/yogurt/tls/*."
+            "KEIN TLS: Zert-Dateien fehlen (%s / %s) – Server lauscht auf HTTP, "
+            "das Browser-Mikrofon funktioniert dann NICHT. Installer liefert /opt/yogurt/tls/*.",
+            tls_cert, tls_key,
         )
     uvicorn.run(
         app,
