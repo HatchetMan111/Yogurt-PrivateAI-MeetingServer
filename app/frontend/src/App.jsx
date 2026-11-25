@@ -380,7 +380,8 @@ function MeetingDetail({ id, go }) {
       </div>
 
       {m.status === 'error' && m.error && <div className="alert error">⚠ Fehler: {m.error} <button className="btn ghost sm" onClick={resummarize}>Erneut versuchen</button></div>}
-      {processing && <div className="alert info"><span className="spin">◌</span> {STATUS_LABEL[m.status]} – diese Seite aktualisiert sich automatisch.</div>}
+      {m.status === 'done' && m.error && <div className="alert info">ℹ {m.error} <button className="btn ghost sm" onClick={() => go('#/settings')}>⚙ Einstellungen</button> <button className="btn ghost sm" onClick={resummarize}>🔄 Neu zusammenfassen</button></div>}
+      {processing && <div className="alert info"><span className="spin">◌</span> {STATUS_LABEL[m.status]}{m.status === 'summarizing' ? ' – kann bei langen Meetings 1–3 Min dauern (oder in ⚙ Einstellungen schnelleren Provider wählen)' : ' – diese Seite aktualisiert sich automatisch.'}</div>}
       {msg && <div className="alert info">✔ {msg}</div>}
 
       <div className="title-row">

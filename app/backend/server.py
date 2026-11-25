@@ -204,7 +204,7 @@ def llm_model_name() -> str:
         return get_setting("ollama_model", "llama3.2")
     return LLM_MODEL_NAME
 
-def llm_chat(system: str, user: str, max_tokens: int = 1400) -> str:
+def llm_chat(system: str, user: str, max_tokens: int = 900) -> str:
     payload = {
         "model": llm_model_name(),
         "temperature": 0.2,
@@ -219,8 +219,12 @@ def llm_chat(system: str, user: str, max_tokens: int = 1400) -> str:
     if key:
         headers["Authorization"] = f"Bearer {key}"
     base = llm_base_url()
+    try:
+        timeout = int(get_setting("llm_timeout", "300"))
+    except ValueError:
+        timeout = 300
     r = httpx.post(f"{base}/chat/completions",
-                   json=payload, timeout=600, headers=headers)
+                   json=payload, timeout=timeout, headers=headers)
     r.raise_for_status()
     data = r.json()
     content = data["choices"][0]["message"]["content"]
@@ -238,8 +242,10 @@ def summarize_transcript(transcript: str, source: str) -> str:
         "## Offene Punkte\n(Stichpunkte, was unklar/unklärt ist; sonst „keine“)"
     )
     hint = "Audiotranskript" if source == "audio" else "Notiztext"
+    # Lange Transkripte kürzen (60k Zeichen ~ 15k Tokens) – sonst wird der
+    # Prompt für lokale Modelle zu groß und die Generierung dauert ewig.
     user = f"Erstelle die Meeting-Notizen aus dem folgenden {hint}:\n\n{transcript[:60000]}"
-    return llm_chat(system, user, max_tokens=1400)
+    return llm_chat(system, user, max_tokens=900)
 
 def generate_title(transcript: str) -> str:
     system = "Du vergibst prägnante Meeting-Titel. Antworte NUR mit dem Titel, max. 6 Wörter, ohne Anführungszeichen."
@@ -314,23 +320,36 @@ def run_pipeline(meeting_id: int, skip_transcribe: bool = False) -> None:
             if not transcript:
                 raise RuntimeError("Weder Transkript noch Audio/Text vorhanden.")
 
-        # ── Stufe 2: Zusammenfassen (llama.cpp) ──
+        # ── Stufe 2: Zusammenfassen (LLM-Provider) ──
+        # WICHTIG: Ein Fehler hier darf das Meeting NICHT als "error" markieren –
+        # das Transkript ist gerettet und bleibt sichtbar. Status bleibt "done"
+        # mit Hinweis, damit der Nutzer in ⚙ Einstellungen einen schnelleren
+        # Provider (Ollama/OpenRouter) wählen und "Neu zusammenfassen" klicken kann.
         if not llm_ready(force=True):
             update(conn, meeting_id, status="done",
-                   error="Hinweis: llama-server nicht erreichbar – nur Transkript gespeichert.")
+                   error="Hinweis: LLM nicht erreichbar – nur Transkript gespeichert. "
+                         "In ⚙ Einstellungen Provider prüfen.")
             conn.commit()
             return
         conn.execute("UPDATE meetings SET status = 'summarizing', updated_at = ? WHERE id = ?",
                      (now_iso(), meeting_id))
         conn.commit()
-        summary = summarize_transcript(transcript, row["source"])
-        fields = {"summary": summary, "llm_model": LLM_MODEL_NAME, "error": ""}
-        if not (row["title"] or "").strip():
-            try:
-                fields["title"] = generate_title(transcript)
-            except Exception as te:
-                log.warning("Titel-Generierung fehlgeschlagen: %s", te)
-        update(conn, meeting_id, status="done", **fields)
+        try:
+            summary = summarize_transcript(transcript, row["source"])
+            fields = {"summary": summary, "llm_model": llm_model_name(), "error": ""}
+            if not (row["title"] or "").strip():
+                try:
+                    fields["title"] = generate_title(transcript)
+                except Exception as te:
+                    log.warning("Titel-Generierung fehlgeschlagen: %s", te)
+            update(conn, meeting_id, status="done", **fields)
+        except Exception as le:  # noqa: BLE001 – Transkript bleibt, Meeting NICHT als Fehler
+            log.exception("Zusammenfassung für Meeting %d fehlgeschlagen", meeting_id)
+            update(conn, meeting_id, status="done",
+                   error=f"Zusammenfassung fehlgeschlagen ({type(le).__name__}: {le}). "
+                         f"Das Transkript bleibt erhalten. Tipp: in ⚙ Einstellungen einen "
+                         f"schnelleren LLM-Provider (Ollama/OpenRouter) wählen und "
+                         f"„Neu zusammenfassen“ klicken.")
         conn.commit()
         log.info("Meeting %d fertig verarbeitet.", meeting_id)
     except Exception as exc:  # noqa: BLE001 – komplette Fehlerkette in die DB
