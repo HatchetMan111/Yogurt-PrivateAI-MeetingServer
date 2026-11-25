@@ -167,6 +167,10 @@ def whisper_model_cached() -> bool:
 # ── llama.cpp (OpenAI-kompatible API auf 127.0.0.1) ──────────────────────────
 _llm_ready_cache = {"ok": False, "checked": 0.0}
 
+def llm_ready_cached() -> bool:
+    """Nur den gecachten Wert liefern – KEIN Netzwerk-Call (für Settings/UI)."""
+    return _llm_ready_cache["ok"]
+
 def llm_ready(force: bool = False) -> bool:
     # Ergebnis 10 s cachen – Health-Endpoint wird oft gepollt
     if not force and (time.time() - _llm_ready_cache["checked"]) < 10:
@@ -378,7 +382,7 @@ def health():
         "whisper_loaded": _whisper is not None,
         "whisper_cached": whisper_model_cached(),
         "llm_port": LLM_PORT,
-        "llm_ready": llm_ready(force=False),
+        "llm_ready": llm_ready_cached(),
         "lang": WHISPER_LANG or "auto",
     })
 
@@ -405,7 +409,7 @@ def get_settings():
         "whisper_model": get_setting("whisper_model", WHISPER_MODEL),
         "whisper_lang": get_setting("whisper_lang", WHISPER_LANG or "auto"),
         "available_providers": ["local", "ollama", "openrouter"],
-        "llm_ready": llm_ready(force=False),
+        "llm_ready": llm_ready_cached(),
         "llm_model_active": llm_model_name(),
     })
 

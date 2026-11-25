@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 import { api, uploadWithProgress } from './api.js'
 import { renderMarkdown } from './md.js'
@@ -445,25 +445,29 @@ function MeetingDetail({ id, go }) {
 // ── Einstellungen ─────────────────────────────────────────────────────────────
 function SettingsPage({ go }) {
   const [s, setS] = useState(null)
-  const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
+  const saveTimer = useRef(null)
 
   useEffect(() => {
     api.settings().then(setS).catch(e => setErr(String(e.message || e)))
   }, [])
 
-  const save = async (patch) => {
-    setSaving(true); setMsg(''); setErr('')
-    try {
-      const updated = await api.updateSettings(patch)
-      setS(updated)
-      setMsg('Gespeichert.')
-    } catch (e) {
-      setErr(String(e.message || e))
-    } finally {
-      setSaving(false)
-    }
+  // Optimistisches Speichern: UI sofort aktualisieren, PUT im Hintergrund.
+  // Mehrere schnelle Änderungen werden gebündelt (150 ms Debounce).
+  const save = (patch) => {
+    setS(prev => prev ? { ...prev, ...patch } : prev)
+    setMsg('Speichere …')
+    clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(async () => {
+      try {
+        await api.updateSettings(patch)
+        setMsg('✔ Gespeichert')
+      } catch (e) {
+        setErr(String(e.message || e))
+        setMsg('')
+      }
+    }, 150)
   }
 
   if (err && !s) return <div className="page"><div className="alert error">⚠ {err}</div></div>
@@ -487,7 +491,7 @@ function SettingsPage({ go }) {
             <button key={p}
               className={`tab ${s.llm_provider === p ? 'on' : ''}`}
               onClick={() => save({ llm_provider: p })}
-              disabled={saving}>
+             >
               {p === 'local' ? '🏠 Lokal (llama.cpp)' : p === 'ollama' ? '🦙 Ollama' : '🌐 OpenRouter'}
             </button>
           ))}
@@ -536,7 +540,7 @@ function SettingsPage({ go }) {
             <button key={m}
               className={`tab ${s.whisper_model === m ? 'on' : ''}`}
               onClick={() => save({ whisper_model: m })}
-              disabled={saving}>
+             >
               {m}
             </button>
           ))}
@@ -545,11 +549,11 @@ function SettingsPage({ go }) {
         <label className="lbl" style={{marginTop: 12}}>Sprache</label>
         <div className="row">
           <button className={`tab ${s.whisper_lang === 'auto' ? 'on' : ''}`}
-            onClick={() => save({ whisper_lang: 'auto' })} disabled={saving}>Auto</button>
+            onClick={() => save({ whisper_lang: 'auto' })}>Auto</button>
           <button className={`tab ${s.whisper_lang === 'de' ? 'on' : ''}`}
-            onClick={() => save({ whisper_lang: 'de' })} disabled={saving}>Deutsch</button>
+            onClick={() => save({ whisper_lang: 'de' })}>Deutsch</button>
           <button className={`tab ${s.whisper_lang === 'en' ? 'on' : ''}`}
-            onClick={() => save({ whisper_lang: 'en' })} disabled={saving}>Englisch</button>
+            onClick={() => save({ whisper_lang: 'en' })}>Englisch</button>
         </div>
       </div>
 
