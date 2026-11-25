@@ -2,7 +2,8 @@
 async function jfetch(url, opts = {}) {
   let res
   try {
-    res = await fetch(url, opts)
+    // 30s Default-Timeout; für Upload/Polling reicht das (Background-Tasks liefern sofort)
+    res = await fetch(url, { ...opts, signal: opts.signal || AbortSignal.timeout(30000) })
   } catch (err) {
     throw new Error(`Netzwerkfehler bei ${url}: ${err.message}`)
   }
@@ -50,6 +51,8 @@ export function uploadWithProgress(file, title, onProgress) {
     if (title) fd.append('title', title)
     const xhr = new XMLHttpRequest()
     xhr.open('POST', '/api/meetings/upload')
+    // Upload großer Dateien kann dauern – 10 min Timeout
+    xhr.timeout = 600000
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100))
     }
@@ -60,6 +63,7 @@ export function uploadWithProgress(file, title, onProgress) {
         reject(new Error(`Upload fehlgeschlagen: HTTP ${xhr.status} ${xhr.responseText.slice(0, 200)}`))
       }
     }
+    xhr.ontimeout = () => reject(new Error('Upload-Timeout (10 min) – Datei evtl. zu groß oder Server überlastet.'))
     xhr.onerror = () => reject(new Error('Upload fehlgeschlagen (Netzwerkfehler)'))
     xhr.send(fd)
   })

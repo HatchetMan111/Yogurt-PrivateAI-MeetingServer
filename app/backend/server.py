@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
@@ -337,6 +337,7 @@ def list_meetings():
 
 @app.post("/api/meetings/upload")
 async def upload_meeting(
+    request: Request,
     file: UploadFile = File(...),
     title: str = Form(default=""),
 ):
@@ -361,11 +362,15 @@ async def upload_meeting(
     with db() as conn:
         conn.execute("UPDATE meetings SET audio_path = ?, updated_at = ? WHERE id = ?",
                      (str(audio_path), now_iso(), meeting_id))
-    executor.submit(run_pipeline, meeting_id)
-    return JSONResponse({"id": meeting_id, "status": "queued"})
+    # Sofort antworten – Verarbeitung läuft im Hintergrund (BackgroundTasks).
+    # Bei langen Audio-Dateien (50s+) dauert Whisper auf CPU mehrere Minuten;
+    # ein synchroner Request würde Browser/Proxy-Timeouts auslösen.
+    bg = BackgroundTasks()
+    bg.add_task(run_pipeline, meeting_id)
+    return JSONResponse({"id": meeting_id, "status": "queued"}, background=bg)
 
 @app.post("/api/meetings/text")
-def text_meeting(body: dict):
+def text_meeting(body: dict, background_tasks: BackgroundTasks):
     text = (body.get("text") or "").strip()
     if not text:
         raise HTTPException(400, "Feld 'text' darf nicht leer sein.")
@@ -378,7 +383,7 @@ def text_meeting(body: dict):
             ((body.get("title") or "").strip(), "queued", "text", now_iso(), now_iso(), text),
         )
         meeting_id = cur.lastrowid
-    executor.submit(run_pipeline, meeting_id)
+    background_tasks.add_task(run_pipeline, meeting_id)
     return JSONResponse({"id": meeting_id, "status": "queued"})
 
 @app.get("/api/meetings/{meeting_id}")
@@ -425,14 +430,14 @@ def patch_meeting(meeting_id: int, body: dict):
     return get_meeting(meeting_id)
 
 @app.post("/api/meetings/{meeting_id}/resummarize")
-def resummarize(meeting_id: int):
+def resummarize(meeting_id: int, background_tasks: BackgroundTasks):
     with db() as conn:
         row = conn.execute("SELECT transcript FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
         if row is None:
             raise HTTPException(404, "Meeting nicht gefunden.")
         if not (row["transcript"] or "").strip():
             raise HTTPException(409, "Kein Transkript vorhanden.")
-    executor.submit(run_pipeline, meeting_id, True)
+    background_tasks.add_task(run_pipeline, meeting_id, True)
     return JSONResponse({"id": meeting_id, "status": "queued"})
 
 @app.get("/api/meetings/{meeting_id}/audio")

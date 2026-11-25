@@ -34,7 +34,7 @@
 set -Eeuo pipefail
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-INSTALLER_VERSION="1.0.4"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
+INSTALLER_VERSION="1.0.5"   # wird in --status/-Logs ausgegeben – hilft bei Fehlersuche
 APP_NAME="yogurt"           # Kurzname (Logs, Services heißen yogurt-meet*)
 CT_HOSTNAME="yogurt"        # CT bekommt den passenden Namen
 REPO_OWNER="HatchetMan111"
