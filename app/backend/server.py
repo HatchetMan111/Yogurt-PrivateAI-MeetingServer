@@ -76,6 +76,10 @@ CREATE TABLE IF NOT EXISTS meetings (
     error TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_meetings_created ON meetings(created_at DESC);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT DEFAULT ''
+);
 """
 
 def db() -> sqlite3.Connection:
@@ -89,6 +93,19 @@ def init_db() -> None:
         conn.executescript(SCHEMA)
 
 init_db()
+
+def get_setting(key: str, default: str = "") -> str:
+    with db() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+def set_setting(key: str, value: str) -> None:
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -156,7 +173,8 @@ def llm_ready(force: bool = False) -> bool:
         return _llm_ready_cache["ok"]
     ok = False
     try:
-        r = httpx.get(f"http://127.0.0.1:{LLM_PORT}/v1/models", timeout=3)
+        base = llm_base_url()
+        r = httpx.get(f"{base}/models", timeout=3)
         ok = r.status_code == 200
     except Exception:
         ok = False
@@ -164,9 +182,31 @@ def llm_ready(force: bool = False) -> bool:
     _llm_ready_cache["checked"] = time.time()
     return ok
 
+def llm_base_url() -> str:
+    """LLM-Base-URL aus Settings oder Env."""
+    provider = get_setting("llm_provider", "local")
+    if provider == "openrouter":
+        return "https://openrouter.ai/api/v1"
+    elif provider == "ollama":
+        return get_setting("ollama_url", "http://127.0.0.1:11434").rstrip("/") + "/v1"
+    return f"http://127.0.0.1:{LLM_PORT}"
+
+def llm_api_key() -> str:
+    """API-Key für OpenRouter (leer = kein Key nötig)."""
+    return get_setting("openrouter_api_key", "")
+
+def llm_model_name() -> str:
+    """Modellname aus Settings oder Env."""
+    provider = get_setting("llm_provider", "local")
+    if provider == "openrouter":
+        return get_setting("openrouter_model", "openai/gpt-4o-mini")
+    elif provider == "ollama":
+        return get_setting("ollama_model", "llama3.2")
+    return LLM_MODEL_NAME
+
 def llm_chat(system: str, user: str, max_tokens: int = 1400) -> str:
     payload = {
-        "model": LLM_MODEL_NAME,
+        "model": llm_model_name(),
         "temperature": 0.2,
         "max_tokens": max_tokens,
         "messages": [
@@ -174,8 +214,13 @@ def llm_chat(system: str, user: str, max_tokens: int = 1400) -> str:
             {"role": "user", "content": user},
         ],
     }
-    r = httpx.post(f"http://127.0.0.1:{LLM_PORT}/v1/chat/completions",
-                   json=payload, timeout=600)
+    headers = {}
+    key = llm_api_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    base = llm_base_url()
+    r = httpx.post(f"{base}/chat/completions",
+                   json=payload, timeout=600, headers=headers)
     r.raise_for_status()
     data = r.json()
     content = data["choices"][0]["message"]["content"]
@@ -328,6 +373,43 @@ def config():
         "version": VERSION,
         "data_dir": str(DATA_DIR),
     })
+
+# ── Einstellungen (LLM-Provider, Whisper-Modell, etc.) ───────────────────────
+@app.get("/api/settings")
+def get_settings():
+    return JSONResponse({
+        "llm_provider": get_setting("llm_provider", "local"),
+        "ollama_url": get_setting("ollama_url", "http://127.0.0.1:11434"),
+        "ollama_model": get_setting("ollama_model", "llama3.2"),
+        "openrouter_api_key": get_setting("openrouter_api_key", ""),
+        "openrouter_model": get_setting("openrouter_model", "openai/gpt-4o-mini"),
+        "whisper_model": get_setting("whisper_model", WHISPER_MODEL),
+        "whisper_lang": get_setting("whisper_lang", WHISPER_LANG or "auto"),
+        "available_providers": ["local", "ollama", "openrouter"],
+        "llm_ready": llm_ready(force=False),
+        "llm_model_active": llm_model_name(),
+    })
+
+@app.put("/api/settings")
+def put_settings(body: dict):
+    allowed = {
+        "llm_provider": None,
+        "ollama_url": None,
+        "ollama_model": None,
+        "openrouter_api_key": None,
+        "openrouter_model": None,
+        "whisper_model": None,
+        "whisper_lang": None,
+    }
+    for k, v in body.items():
+        if k in allowed:
+            set_setting(k, str(v))
+    # Whisper-Modell-Wechsel: Cache leeren (nur beim nächsten Meeting neu geladen)
+    if "whisper_model" in body:
+        global _whisper, _whisper_loaded_name
+        _whisper = None
+        _whisper_loaded_name = None
+    return get_settings()
 
 @app.get("/api/meetings")
 def list_meetings():

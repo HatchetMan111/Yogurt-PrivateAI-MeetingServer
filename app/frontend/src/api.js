@@ -19,6 +19,12 @@ async function jfetch(url, opts = {}) {
 export const api = {
   health: () => jfetch('/api/health'),
   config: () => jfetch('/api/config'),
+  settings: () => jfetch('/api/settings'),
+  updateSettings: (patch) => jfetch('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  }),
   meetings: () => jfetch('/api/meetings'),
   meeting: (id) => jfetch(`/api/meetings/${id}`),
   remove: (id) => jfetch(`/api/meetings/${id}`, { method: 'DELETE' }),

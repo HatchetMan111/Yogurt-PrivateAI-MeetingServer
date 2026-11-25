@@ -105,6 +105,7 @@ function Dashboard({ go }) {
           </div>
         )}
         <button className="btn primary" onClick={() => go('#/new')}>＋ Neues Meeting</button>
+        <button className="btn ghost" onClick={() => go('#/settings')} title="Einstellungen">⚙</button>
       </header>
 
       {error && <div className="alert error">⚠ {error}</div>}
@@ -440,10 +441,130 @@ function MeetingDetail({ id, go }) {
   )
 }
 
+// ── Einstellungen ─────────────────────────────────────────────────────────────
+function SettingsPage({ go }) {
+  const [s, setS] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    api.settings().then(setS).catch(e => setErr(String(e.message || e)))
+  }, [])
+
+  const save = async (patch) => {
+    setSaving(true); setMsg(''); setErr('')
+    try {
+      const updated = await api.updateSettings(patch)
+      setS(updated)
+      setMsg('Gespeichert.')
+    } catch (e) {
+      setErr(String(e.message || e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (err && !s) return <div className="page"><div className="alert error">⚠ {err}</div></div>
+  if (!s) return <div className="page"><div className="empty">Lade Einstellungen …</div></div>
+
+  return (
+    <div className="page">
+      <div className="row">
+        <button className="btn ghost" onClick={() => go('#/')}>← Zurück</button>
+        <h2 className="viewtitle">⚙ Einstellungen</h2>
+      </div>
+      {msg && <div className="alert info">✔ {msg}</div>}
+      {err && <div className="alert error">⚠ {err}</div>}
+
+      <div className="card">
+        <h3>🧠 LLM-Provider (Zusammenfassung)</h3>
+        <p className="hint">Lokal (llama.cpp im Container), Ollama (eigene Instanz) oder OpenRouter (Cloud, API-Key nötig).</p>
+        <label className="lbl">Provider</label>
+        <div className="row">
+          {s.available_providers.map(p => (
+            <button key={p}
+              className={`tab ${s.llm_provider === p ? 'on' : ''}`}
+              onClick={() => save({ llm_provider: p })}
+              disabled={saving}>
+              {p === 'local' ? '🏠 Lokal (llama.cpp)' : p === 'ollama' ? '🦙 Ollama' : '🌐 OpenRouter'}
+            </button>
+          ))}
+        </div>
+
+        {s.llm_provider === 'ollama' && (
+          <>
+            <label className="lbl" style={{marginTop: 16}}>Ollama-URL</label>
+            <input className="txt" defaultValue={s.ollama_url}
+                   onBlur={e => save({ ollama_url: e.target.value })} />
+            <label className="lbl" style={{marginTop: 12}}>Modell</label>
+            <input className="txt" defaultValue={s.ollama_model}
+                   onBlur={e => save({ ollama_model: e.target.value })}
+                   placeholder="z. B. llama3.2, qwen2.5, mistral" />
+            <p className="tiny">Ollama muss von außen erreichbar sein (z. B. <code>OLLAMA_HOST=0.0.0.0:11434</code>).</p>
+          </>
+        )}
+
+        {s.llm_provider === 'openrouter' && (
+          <>
+            <label className="lbl" style={{marginTop: 16}}>OpenRouter API-Key</label>
+            <input className="txt" type="password" defaultValue={s.openrouter_api_key}
+                   onBlur={e => save({ openrouter_api_key: e.target.value })}
+                   placeholder="sk-or-…" />
+            <label className="lbl" style={{marginTop: 12}}>Modell</label>
+            <input className="txt" defaultValue={s.openrouter_model}
+                   onBlur={e => save({ openrouter_model: e.target.value })}
+                   placeholder="z. B. openai/gpt-4o-mini, anthropic/claude-3.5-sonnet" />
+            <p className="tiny">API-Key auf <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a> erstellen.</p>
+          </>
+        )}
+
+        {s.llm_provider === 'local' && (
+          <div className="alert info" style={{marginTop: 12}}>
+            🏠 Lokales llama.cpp (Qwen3-1.7B) läuft im Container auf 127.0.0.1:8081.
+            Für längere Meetings kann das dauern – oder du nutzt Ollama/OpenRouter.
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>🎙️ Whisper (Transkription)</h3>
+        <label className="lbl">Modell</label>
+        <div className="row">
+          {['tiny', 'base', 'small', 'medium', 'large-v3', 'large-v3-turbo'].map(m => (
+            <button key={m}
+              className={`tab ${s.whisper_model === m ? 'on' : ''}`}
+              onClick={() => save({ whisper_model: m })}
+              disabled={saving}>
+              {m}
+            </button>
+          ))}
+        </div>
+        <p className="tiny">Größer = genauer, aber langsamer. <b>small</b> ist ein guter Kompromiss.</p>
+        <label className="lbl" style={{marginTop: 12}}>Sprache</label>
+        <div className="row">
+          <button className={`tab ${s.whisper_lang === 'auto' ? 'on' : ''}`}
+            onClick={() => save({ whisper_lang: 'auto' })} disabled={saving}>Auto</button>
+          <button className={`tab ${s.whisper_lang === 'de' ? 'on' : ''}`}
+            onClick={() => save({ whisper_lang: 'de' })} disabled={saving}>Deutsch</button>
+          <button className={`tab ${s.whisper_lang === 'en' ? 'on' : ''}`}
+            onClick={() => save({ whisper_lang: 'en' })} disabled={saving}>Englisch</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <h3>📊 Status</h3>
+        <p className="tiny">LLM-Provider: <b>{s.llm_provider}</b> · Modell: <b>{s.llm_model_active}</b> · Erreichbar: {s.llm_ready ? '✅' : '❌'}</p>
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const [hash, go] = useHash()
   const meetingMatch = hash.match(/^#\/meeting\/(\d+)/)
   if (hash.startsWith('#/new')) return <NewMeeting go={go} />
+  if (hash.startsWith('#/settings')) return <SettingsPage go={go} />
   if (meetingMatch) return <MeetingDetail id={Number(meetingMatch[1])} go={go} />
   return <Dashboard go={go} />
 }
